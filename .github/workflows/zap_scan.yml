@@ -1,23 +1,69 @@
 name: "ZAP Baseline Scan"
 
 on:
-  schedule:
-    - cron:  '0 18 * * 6'
+  workflow_dispatch:
 
 jobs:
   zap_scan:
+    name: ZAP Baseline Scan
     runs-on: ubuntu-latest
-    name: Scan Juice Shop preview instance on Heroku
+
+    permissions:
+      contents: read
+      issues: write
+
     steps:
-      - name: Check out Git repository
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 #v6.0.1
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          ref: develop
-      - name: ZAP Scan
-        uses: zaproxy/action-baseline@de8ad967d3548d44ef623df22cf95c3b0baf8b25 # v0.15.0
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Start Juice Shop
+        shell: bash
+        run: |
+          npm start > juice-shop.log 2>&1 &
+          echo $! > juice-shop.pid
+
+      - name: Wait for Juice Shop
+        shell: bash
+        run: |
+          for i in {1..60}; do
+            if curl --fail --silent http://127.0.0.1:3000 > /dev/null; then
+              echo "Juice Shop is available."
+              exit 0
+            fi
+
+            echo "Waiting for Juice Shop..."
+            sleep 5
+          done
+
+          echo "Juice Shop did not start."
+          cat juice-shop.log
+          exit 1
+
+      - name: Run ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.15.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          docker_name: 'ghcr.io/zaproxy/zaproxy:stable'
-          target: 'https://preview.owasp-juice.shop'
-          rules_file_name: '.zap/rules.tsv'
-          cmd_options: '-a -j'
+          target: "http://127.0.0.1:3000"
+          docker_name: "ghcr.io/zaproxy/zaproxy:stable"
+          rules_file_name: ".zap/rules.tsv"
+          cmd_options: "-a -j"
+          fail_action: false
+          allow_issue_writing: false
+          artifact_name: "zap-baseline-report"
+
+      - name: Upload Juice Shop log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: juice-shop-log
+          path: juice-shop.log
+          if-no-files-found: ignore
